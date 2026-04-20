@@ -16,7 +16,7 @@ dependencies = [
     "sse-starlette>=3.0.0",             # SSE 流式推送
 
     # ========= Agent 框架 (LangGraph/LangChain 1.0 系列) =========
-    "langgraph>=1.0.10,<1.1",           # 2026-02-27 稳定版
+    "langgraph>=1.0.10,<1.2",           # 2026-02-27 稳定版
     "langchain>=1.2.15,<1.3",
     "langchain-openai>=1.1.0,<1.2",
     "langchain-core>=1.2.20",
