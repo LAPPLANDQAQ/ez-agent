@@ -11,3 +11,13 @@ dist/
 build/
 *.log
 
+
+# 保留示例文件不被 .env 规则排除
+!.env.example
+
+# 日志目录(由 app/infra/logger.py 的 setup_file_sink 创建)
+logs/
+
+# 测试覆盖率
+.coverage
+htmlcov/
