@@ -23,3 +23,21 @@ class SearchResult(BaseModel):
     snippet: str
     score: float = 0.0
     sub_question_index: int = 0
+
+
+class FetchTarget(BaseModel):
+    """Single URL selected for fetching and reading."""
+
+    url: str
+    title: str
+    source_id: int
+
+
+class ReadChunk(BaseModel):
+    """Summarized content extracted from a fetched source."""
+
+    source_id: int
+    url: str
+    title: str
+    summary: str
+    raw_length: int = 0
