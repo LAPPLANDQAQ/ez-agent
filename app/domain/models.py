@@ -13,3 +13,13 @@ class LLMResult(BaseModel):
     total_tokens: int = 0
     model_name: str = ""
     provider: str = ""
+
+
+class SearchResult(BaseModel):
+    """Normalized result returned by a search provider."""
+
+    url: str
+    title: str
+    snippet: str
+    score: float = 0.0
+    sub_question_index: int = 0

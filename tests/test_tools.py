@@ -8,8 +8,9 @@ from unittest.mock import patch
 
 import pytest
 
-from app.domain.models import LLMResult
+from app.domain.models import LLMResult, SearchResult
 from app.tools.llm import call_llm
+from app.tools.search import search_multiple
 
 
 class FakeResponse:
@@ -35,6 +36,11 @@ def _required_env(model: str = "deepseek-chat") -> dict[str, str]:
         "DEEPSEEK_MODEL": model,
         "TAVILY_API_KEY": "tvly-test",
     }
+
+
+def _search_response(*items: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Build a Tavily-like search response."""
+    return {"results": list(items)}
 
 
 @pytest.mark.asyncio
@@ -187,3 +193,155 @@ async def test_call_llm_raises_when_all_models_fail(
         "deepseek-reasoner",
         "deepseek-reasoner",
     ]
+
+
+@pytest.mark.asyncio
+async def test_search_multiple_returns_normalized_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """search_multiple should call Tavily and normalize search results."""
+    calls: list[dict[str, Any]] = []
+
+    class FakeAsyncTavilyClient:
+        """Successful fake Tavily client."""
+
+        def __init__(self, *, api_key: str) -> None:
+            self.api_key = api_key
+
+        async def search(self, **kwargs: Any) -> dict[str, list[dict[str, Any]]]:
+            calls.append({"api_key": self.api_key, **kwargs})
+            return _search_response(
+                {
+                    "url": "https://example.com/a",
+                    "title": "Example A",
+                    "content": "Snippet A",
+                    "score": 0.91,
+                }
+            )
+
+        async def close(self) -> None:
+            calls.append({"closed": True})
+
+    monkeypatch.setattr("app.tools.search.AsyncTavilyClient", FakeAsyncTavilyClient)
+    with patch.dict(os.environ, _required_env(), clear=False):
+        results = await search_multiple(["agent search"], top_k=3)
+
+    assert results == [
+        SearchResult(
+            url="https://example.com/a",
+            title="Example A",
+            snippet="Snippet A",
+            score=0.91,
+            sub_question_index=0,
+        )
+    ]
+    assert calls[0] == {
+        "api_key": "tvly-test",
+        "query": "agent search",
+        "max_results": 3,
+    }
+    assert calls[-1] == {"closed": True}
+
+
+@pytest.mark.asyncio
+async def test_search_multiple_deduplicates_urls_across_queries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Duplicate URLs across queries should be kept only once."""
+
+    class FakeAsyncTavilyClient:
+        """Fake Tavily client returning overlapping URLs."""
+
+        def __init__(self, *, api_key: str) -> None:
+            pass
+
+        async def search(self, **kwargs: Any) -> dict[str, list[dict[str, Any]]]:
+            query = kwargs["query"]
+            if query == "first":
+                return _search_response(
+                    {
+                        "url": "https://example.com/shared",
+                        "title": "Shared first",
+                        "content": "First snippet",
+                        "score": 0.7,
+                    },
+                    {
+                        "url": "https://example.com/unique",
+                        "title": "Unique",
+                        "content": "Unique snippet",
+                        "score": 0.6,
+                    },
+                )
+            return _search_response(
+                {
+                    "url": "https://example.com/shared",
+                    "title": "Shared second",
+                    "content": "Second snippet",
+                    "score": 0.9,
+                }
+            )
+
+    monkeypatch.setattr("app.tools.search.AsyncTavilyClient", FakeAsyncTavilyClient)
+    with patch.dict(os.environ, _required_env(), clear=False):
+        results = await search_multiple(["first", "second"])
+
+    assert [result.url for result in results] == [
+        "https://example.com/shared",
+        "https://example.com/unique",
+    ]
+    assert [result.sub_question_index for result in results] == [0, 0]
+
+
+@pytest.mark.asyncio
+async def test_search_multiple_keeps_successful_queries_when_one_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single query failure should not fail the whole batch."""
+
+    class FakeAsyncTavilyClient:
+        """Fake Tavily client with one failing query."""
+
+        def __init__(self, *, api_key: str) -> None:
+            pass
+
+        async def search(self, **kwargs: Any) -> dict[str, list[dict[str, Any]]]:
+            if kwargs["query"] == "bad":
+                raise TimeoutError("search timeout")
+            return _search_response(
+                {
+                    "url": "https://example.com/good",
+                    "title": "Good",
+                    "snippet": "Good snippet",
+                    "score": 1.0,
+                }
+            )
+
+    monkeypatch.setattr("app.tools.search.AsyncTavilyClient", FakeAsyncTavilyClient)
+    with patch.dict(os.environ, _required_env(), clear=False):
+        results = await search_multiple(["bad", "good"])
+
+    assert len(results) == 1
+    assert results[0].url == "https://example.com/good"
+    assert results[0].sub_question_index == 1
+
+
+@pytest.mark.asyncio
+async def test_search_multiple_ignores_blank_queries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Blank queries should be ignored without calling Tavily."""
+    called = False
+
+    class FakeAsyncTavilyClient:
+        """Fake Tavily client that should not be instantiated."""
+
+        def __init__(self, *, api_key: str) -> None:
+            nonlocal called
+            called = True
+
+    monkeypatch.setattr("app.tools.search.AsyncTavilyClient", FakeAsyncTavilyClient)
+
+    results = await search_multiple(["", "   "])
+
+    assert results == []
+    assert called is False
