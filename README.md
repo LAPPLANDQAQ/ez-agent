@@ -1,8 +1,8 @@
 # ez-agent
 
 `ez-agent` 是一个面向自动化深度研究场景的 Python Agent 项目。当前仓库按分阶段
-commit 演进：配置与日志基础设施已经完成，工具层已经接入 LLM 客户端和 Tavily 搜索；
-抓取、状态图、API、SSE、前端和部署仍会在后续 commit 中继续实现。
+commit 演进：配置与日志基础设施已经完成，工具层已经接入 LLM、Tavily 搜索、网页抓取
+和 Redis 缓存；状态图、API、SSE、前端和部署会在后续 commit 中继续实现。
 
 ## 当前状态
 
@@ -17,12 +17,18 @@ commit 演进：配置与日志基础设施已经完成，工具层已经接入 
 - 搜索工具：`app/tools/search.py` 提供异步 `search_multiple()`，使用
   `AsyncTavilyClient` 并发搜索，支持单 query 失败不中断、按 URL 去重和
   `sub_question_index` 标记。
-- 领域模型：`app/domain/models.py` 已包含 `LLMResult` 和 `SearchResult`。
+- 缓存工具：`app/infra/cache.py` 提供异步 `cache_get()` 和 `cache_setex()`，
+  Redis 客户端懒初始化，Redis 不可用时降级到单进程内存缓存。
+- 抓取工具：`app/tools/fetcher.py` 提供异步 `fetch_and_summarize_batch()`，
+  使用 `httpx` 抓取网页、`trafilatura` 提取正文、`call_llm()` 生成摘要，并缓存
+  `ReadChunk`。
+- 领域模型：`app/domain/models.py` 已包含 `LLMResult`、`SearchResult`、
+  `FetchTarget` 和 `ReadChunk`。
 
 尚未完成：
 
-- 网页抓取和缓存。
 - LangGraph 状态、节点和完整执行图。
+- Planner、Searcher、Reader、Critic、Writer 节点。
 - FastAPI 路由、数据库层、SSE 事件流和 runner。
 - Streamlit 前端、Docker 部署和项目收尾文档。
 
@@ -53,6 +59,7 @@ ez-agent/
 - Python 3.12+
 - DeepSeek API Key
 - Tavily API Key
+- Redis，生产或联调时使用；本地单进程开发可依赖内存降级
 
 ## 安装依赖
 
@@ -85,6 +92,13 @@ DEEPSEEK_API_KEY=your-deepseek-api-key
 TAVILY_API_KEY=your-tavily-api-key
 ```
 
+常用可选项：
+
+```env
+REDIS_URL=redis://localhost:6379/0
+FETCH_TIMEOUT_SECONDS=10
+```
+
 可以运行配置检查脚本：
 
 ```powershell
@@ -107,7 +121,7 @@ python -m app.main
 python scripts/run_cli.py
 ```
 
-完整研究流程会在后续 graph、runner 和 API commit 中实现。
+完整研究流程会在后续 state、nodes、graph、runner 和 API commit 中实现。
 
 ## 工具层接口
 
@@ -133,6 +147,33 @@ results = await search_multiple(
     ["LangGraph multi-agent architecture", "Deep research agent design"],
     top_k=5,
 )
+```
+
+抓取和摘要：
+
+```python
+from app.domain.models import FetchTarget
+from app.tools.fetcher import fetch_and_summarize_batch
+
+chunks, total_tokens = await fetch_and_summarize_batch(
+    [
+        FetchTarget(
+            url="https://example.com/article",
+            title="Example Article",
+            source_id=1,
+        )
+    ],
+    query="Deep research agent design",
+)
+```
+
+缓存接口：
+
+```python
+from app.infra.cache import cache_get, cache_setex
+
+await cache_setex("example:key", 60, "value")
+value = await cache_get("example:key")
 ```
 
 ## 测试
@@ -163,14 +204,15 @@ pytest -q -p no:cacheprovider --basetemp="C:\code\ez-agent\tmp_pytest\all"
 - 所有函数需要类型标注和简短 docstring。
 - 业务代码中不直接使用 `print()`，CLI 最终输出和环境检查脚本除外。
 - API Key 等敏感配置统一通过 `SecretStr.get_secret_value()` 读取。
+- Redis 内存降级仅用于单进程本地开发，不作为生产缓存方案。
 
 ## 当前推荐提交范围
 
-如果正在提交搜索工具阶段，只提交：
+如果正在提交网页抓取和缓存阶段，只提交：
 
 ```powershell
-git add app/domain/models.py app/tools/search.py tests/test_tools.py
-git commit -m "feat(tools): implement search tool with Tavily"
+git add app/domain/models.py app/infra/cache.py app/tools/fetcher.py tests/test_tools.py README.md
+git commit -m "feat(tools): implement web fetcher with Redis cache"
 ```
 
 不要把本地开发指南、pytest 临时目录或其他无关文件加入该提交。
