@@ -1,12 +1,12 @@
-"""Commit #5 tests for research state and planner node."""
+"""Tests for research graph nodes."""
 
 from __future__ import annotations
 
 import pytest
 
-from app.core.nodes import planner_node
+from app.core.nodes import planner_node, reader_node, searcher_node
 from app.core.state import ResearchState
-from app.domain.models import LLMResult
+from app.domain.models import CriticDecision, LLMResult, ReadChunk, SearchResult
 
 
 def _initial_state() -> ResearchState:
@@ -128,3 +128,200 @@ async def test_planner_node_raises_value_error_for_empty_questions(
 
     with pytest.raises(ValueError, match="no sub-questions"):
         await planner_node(_initial_state())
+
+
+@pytest.mark.asyncio
+async def test_searcher_node_uses_sub_questions_on_first_iteration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """First search iteration should use planner sub-questions."""
+    state = _initial_state()
+    state["sub_questions"] = ["first question", "second question"]
+    calls: list[list[str]] = []
+
+    async def fake_search_multiple(queries: list[str]) -> list[SearchResult]:
+        calls.append(queries)
+        return [
+            SearchResult(
+                url="https://example.com/a",
+                title="Example A",
+                snippet="Snippet A",
+                sub_question_index=0,
+            )
+        ]
+
+    monkeypatch.setattr("app.core.nodes.search_multiple", fake_search_multiple)
+
+    result = await searcher_node(state)
+
+    assert calls == [["first question", "second question"]]
+    assert result["search_results"] == result["latest_search_results"]
+    assert result["latest_search_results"][0].url == "https://example.com/a"
+
+
+@pytest.mark.asyncio
+async def test_searcher_node_uses_critic_queries_after_first_iteration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Follow-up search iterations should use critic next_queries."""
+    state = _initial_state()
+    state["iteration"] = 1
+    state["sub_questions"] = ["initial question"]
+    state["critic_decision"] = CriticDecision(
+        sufficient=False,
+        next_queries=["follow-up one", "follow-up two"],
+    )
+    calls: list[list[str]] = []
+
+    async def fake_search_multiple(queries: list[str]) -> list[SearchResult]:
+        calls.append(queries)
+        return []
+
+    monkeypatch.setattr("app.core.nodes.search_multiple", fake_search_multiple)
+
+    await searcher_node(state)
+
+    assert calls == [["follow-up one", "follow-up two"]]
+
+
+@pytest.mark.asyncio
+async def test_searcher_node_emits_stage_and_search_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """searcher_node should publish stage and per-query events."""
+    state = _initial_state()
+    state["sub_questions"] = ["query a"]
+    events: list[dict] = []
+
+    async def fake_search_multiple(queries: list[str]) -> list[SearchResult]:
+        return []
+
+    async def emit(event: dict) -> None:
+        events.append(event)
+
+    monkeypatch.setattr("app.core.nodes.search_multiple", fake_search_multiple)
+
+    await searcher_node(state, emit_fn=emit)
+
+    assert events == [
+        {
+            "type": "stage",
+            "stage": "searching",
+            "message": "Searching for relevant sources",
+        },
+        {"type": "searching", "query": "query a", "iteration": 0},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reader_node_reads_latest_results_and_accumulates_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """reader_node should read only latest results and accumulate total tokens."""
+    state = _initial_state()
+    state["total_tokens"] = 20
+    state["read_chunks"] = [
+        ReadChunk(
+            source_id=1,
+            url="https://example.com/old",
+            title="Old",
+            summary="Old summary",
+        )
+    ]
+    state["search_results"] = [
+        SearchResult(
+            url="https://example.com/old-search",
+            title="Old Search",
+            snippet="Old",
+        )
+    ]
+    state["latest_search_results"] = [
+        SearchResult(
+            url="https://example.com/a",
+            title="Example A",
+            snippet="Snippet A",
+        ),
+        SearchResult(
+            url="https://example.com/b",
+            title="Example B",
+            snippet="Snippet B",
+        ),
+    ]
+    calls: list[dict] = []
+
+    async def fake_fetch_and_summarize_batch(
+        targets: list,
+        query: str,
+    ) -> tuple[list[ReadChunk], int]:
+        calls.append({"targets": targets, "query": query})
+        return [
+            ReadChunk(
+                source_id=targets[0].source_id,
+                url=targets[0].url,
+                title=targets[0].title,
+                summary="Summary A",
+            )
+        ], 13
+
+    monkeypatch.setattr(
+        "app.core.nodes.fetch_and_summarize_batch",
+        fake_fetch_and_summarize_batch,
+    )
+
+    result = await reader_node(state)
+
+    targets = calls[0]["targets"]
+    assert calls[0]["query"] == state["original_query"]
+    assert [target.url for target in targets] == [
+        "https://example.com/a",
+        "https://example.com/b",
+    ]
+    assert [target.source_id for target in targets] == [2, 3]
+    assert result["read_chunks"] == result["latest_read_chunks"]
+    assert result["latest_read_chunks"][0].source_id == 2
+    assert result["total_tokens"] == 33
+
+
+@pytest.mark.asyncio
+async def test_reader_node_emits_stage_and_reading_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """reader_node should publish stage and per-target events."""
+    state = _initial_state()
+    state["latest_search_results"] = [
+        SearchResult(
+            url="https://example.com/a",
+            title="Example A",
+            snippet="Snippet A",
+        )
+    ]
+    events: list[dict] = []
+
+    async def fake_fetch_and_summarize_batch(
+        targets: list,
+        query: str,
+    ) -> tuple[list[ReadChunk], int]:
+        return [], 0
+
+    async def emit(event: dict) -> None:
+        events.append(event)
+
+    monkeypatch.setattr(
+        "app.core.nodes.fetch_and_summarize_batch",
+        fake_fetch_and_summarize_batch,
+    )
+
+    await reader_node(state, emit_fn=emit)
+
+    assert events == [
+        {
+            "type": "stage",
+            "stage": "reading",
+            "message": "Reading and summarizing sources",
+        },
+        {
+            "type": "reading",
+            "url": "https://example.com/a",
+            "title": "Example A",
+        },
+    ]

@@ -2,7 +2,7 @@
 
 `ez-agent` 是一个面向自动化深度研究场景的 Python Agent 项目。当前仓库按分阶段
 commit 演进：配置与日志基础设施已经完成，工具层已经接入 LLM、Tavily 搜索、网页抓取
-和 Redis 缓存；核心状态模型与 planner 节点已经开始落地。完整状态图、API、SSE、
+和 Redis 缓存；核心状态模型与 planner、searcher、reader 节点已经开始落地。完整状态图、API、SSE、
 前端和部署会在后续 commit 中继续实现。
 
 ## 项目已实现和为实现功能
@@ -30,11 +30,17 @@ commit 演进：配置与日志基础设施已经完成，工具层已经接入 
 - Planner 节点：`app/core/nodes.py` 提供异步 `planner_node()`，读取
   `app/core/prompts/planner.txt`，通过 `call_llm(json_mode=True)` 生成子问题，并累加
   `total_tokens`。
+- Searcher 节点：`app/core/nodes.py` 提供异步 `searcher_node()`，首轮使用
+  `sub_questions` 搜索，后续轮次使用 `critic_decision.next_queries` 搜索，并维护
+  `search_results` 与 `latest_search_results`。
+- Reader 节点：`app/core/nodes.py` 提供异步 `reader_node()`，只消费
+  `latest_search_results`，为结果分配连续 `source_id`，调用抓取摘要工具生成
+  `ReadChunk`，并累加 `total_tokens`。
 
 尚未完成：
 
 - LangGraph 完整执行图。
-- Searcher、Reader、Critic、Writer 节点。
+- Critic、Writer 节点。
 - FastAPI 路由、数据库层、SSE 事件流和 runner。
 - Streamlit 前端、Docker 部署和项目收尾文档。
 
@@ -127,7 +133,7 @@ python -m app.main
 python scripts/run_cli.py
 ```
 
-完整研究流程会在后续 searcher、reader、critic、writer、graph、runner 和 API commit
+完整研究流程会在后续 critic、writer、graph、runner 和 API commit
 中实现。
 
 ## 工具层接口
@@ -203,7 +209,7 @@ pytest
 当前阶段重点测试：
 
 ```powershell
-pytest tests/test_config.py tests/test_tools.py -v
+pytest tests/test_config.py tests/test_tools.py tests/test_nodes.py -v
 ```
 
 如果 Windows 环境下 pytest 临时目录权限异常，可以指定仓库内临时目录：
