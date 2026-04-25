@@ -3,7 +3,9 @@
 This module must not import other application modules.
 """
 
-from pydantic import BaseModel
+from collections.abc import Awaitable, Callable
+
+from pydantic import BaseModel, Field
 
 
 class LLMResult(BaseModel):
@@ -41,3 +43,25 @@ class ReadChunk(BaseModel):
     title: str
     summary: str
     raw_length: int = 0
+
+
+class CriticDecision(BaseModel):
+    """Decision returned by the critic node."""
+
+    sufficient: bool
+    missing_aspects: list[str] = Field(default_factory=list)
+    next_queries: list[str] = Field(default_factory=list)
+    reasoning: str = ""
+
+
+class Citation(BaseModel):
+    """Citation candidate extracted from read chunks."""
+
+    source_id: int
+    url: str
+    title: str
+    snippet: str = ""
+    used_in_report: bool = False
+
+
+EmitFn = Callable[[dict], Awaitable[None]]

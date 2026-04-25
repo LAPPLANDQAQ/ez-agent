@@ -2,9 +2,10 @@
 
 `ez-agent` 是一个面向自动化深度研究场景的 Python Agent 项目。当前仓库按分阶段
 commit 演进：配置与日志基础设施已经完成，工具层已经接入 LLM、Tavily 搜索、网页抓取
-和 Redis 缓存；状态图、API、SSE、前端和部署会在后续 commit 中继续实现。
+和 Redis 缓存；核心状态模型与 planner 节点已经开始落地。完整状态图、API、SSE、
+前端和部署会在后续 commit 中继续实现。
 
-## 当前状态
+## 项目已实现和为实现功能
 
 已完成：
 
@@ -23,12 +24,17 @@ commit 演进：配置与日志基础设施已经完成，工具层已经接入 
   使用 `httpx` 抓取网页、`trafilatura` 提取正文、`call_llm()` 生成摘要，并缓存
   `ReadChunk`。
 - 领域模型：`app/domain/models.py` 已包含 `LLMResult`、`SearchResult`、
-  `FetchTarget` 和 `ReadChunk`。
+  `FetchTarget`、`ReadChunk`、`CriticDecision`、`Citation` 和 `EmitFn`。
+- 研究状态：`app/core/state.py` 定义 `ResearchState`，包括请求级语言、最大迭代次数、
+  搜索结果、阅读片段、critic 决策、引用、token 统计和运行状态。
+- Planner 节点：`app/core/nodes.py` 提供异步 `planner_node()`，读取
+  `app/core/prompts/planner.txt`，通过 `call_llm(json_mode=True)` 生成子问题，并累加
+  `total_tokens`。
 
 尚未完成：
 
-- LangGraph 状态、节点和完整执行图。
-- Planner、Searcher、Reader、Critic、Writer 节点。
+- LangGraph 完整执行图。
+- Searcher、Reader、Critic、Writer 节点。
 - FastAPI 路由、数据库层、SSE 事件流和 runner。
 - Streamlit 前端、Docker 部署和项目收尾文档。
 
@@ -121,7 +127,8 @@ python -m app.main
 python scripts/run_cli.py
 ```
 
-完整研究流程会在后续 state、nodes、graph、runner 和 API commit 中实现。
+完整研究流程会在后续 searcher、reader、critic、writer、graph、runner 和 API commit
+中实现。
 
 ## 工具层接口
 
@@ -176,6 +183,15 @@ await cache_setex("example:key", 60, "value")
 value = await cache_get("example:key")
 ```
 
+Planner 节点：
+
+```python
+from app.core.nodes import planner_node
+
+result = await planner_node(initial_state)
+sub_questions = result["sub_questions"]
+```
+
 ## 测试
 
 运行完整测试：
@@ -196,23 +212,3 @@ pytest tests/test_config.py tests/test_tools.py -v
 New-Item -ItemType Directory -Force -Path tmp_pytest
 pytest -q -p no:cacheprovider --basetemp="C:\code\ez-agent\tmp_pytest\all"
 ```
-
-## 开发约定
-
-- 每个阶段只提交对应 commit 范围内的文件。
-- 不使用 `git add .`，避免把临时文件或本地指南误提交。
-- 所有函数需要类型标注和简短 docstring。
-- 业务代码中不直接使用 `print()`，CLI 最终输出和环境检查脚本除外。
-- API Key 等敏感配置统一通过 `SecretStr.get_secret_value()` 读取。
-- Redis 内存降级仅用于单进程本地开发，不作为生产缓存方案。
-
-## 当前推荐提交范围
-
-如果正在提交网页抓取和缓存阶段，只提交：
-
-```powershell
-git add app/domain/models.py app/infra/cache.py app/tools/fetcher.py tests/test_tools.py README.md
-git commit -m "feat(tools): implement web fetcher with Redis cache"
-```
-
-不要把本地开发指南、pytest 临时目录或其他无关文件加入该提交。
