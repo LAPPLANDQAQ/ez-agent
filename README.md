@@ -1,12 +1,30 @@
 # ez-agent
 
-`ez-agent` 是一个面向智能体项目的 Python 初始骨架。当前仓库提供了可直接上传的目录布局、最小可运行入口，以及面向核心流程、工具适配、基础设施和 API 的占位模块。
+`ez-agent` 是一个面向自动化深度研究场景的 Python Agent 项目。当前仓库按分阶段
+commit 演进：配置与日志基础设施已经完成，工具层已经接入 LLM 客户端和 Tavily 搜索；
+抓取、状态图、API、SSE、前端和部署仍会在后续 commit 中继续实现。
 
-## 项目用途
+## 当前状态
 
-- 保持第一次提交足够小、干净，并便于后续扩展。
-- 从一开始就把智能体逻辑、工具适配层、基础设施和 API 代码拆开。
-- 为后续的规划、执行、评估和前端集成预留清晰基础。
+已完成：
+
+- 配置加载：`app/config.py` 使用 `pydantic-settings`，必填 `DEEPSEEK_API_KEY` 和
+  `TAVILY_API_KEY`，敏感字段使用 `SecretStr`。
+- 日志系统：`app/infra/logger.py` 使用 `loguru`，默认控制台输出，文件 sink 需要显式
+  调用 `setup_file_sink()`。
+- LLM 工具：`app/tools/llm.py` 提供异步 `call_llm()`，使用 `ChatOpenAI` 调用
+  DeepSeek 兼容接口，支持 JSON mode、每模型 3 次重试、fallback 模型和 token 统计回退。
+- 搜索工具：`app/tools/search.py` 提供异步 `search_multiple()`，使用
+  `AsyncTavilyClient` 并发搜索，支持单 query 失败不中断、按 URL 去重和
+  `sub_question_index` 标记。
+- 领域模型：`app/domain/models.py` 已包含 `LLMResult` 和 `SearchResult`。
+
+尚未完成：
+
+- 网页抓取和缓存。
+- LangGraph 状态、节点和完整执行图。
+- FastAPI 路由、数据库层、SSE 事件流和 runner。
+- Streamlit 前端、Docker 部署和项目收尾文档。
 
 ## 目录结构
 
@@ -16,6 +34,7 @@ ez-agent/
 |   +-- api/
 |   +-- core/
 |   |   +-- prompts/
+|   +-- domain/
 |   +-- infra/
 |   +-- tools/
 |   +-- config.py
@@ -24,15 +43,20 @@ ez-agent/
 +-- scripts/
 +-- tests/
 +-- .env.example
-+-- .gitignore
 +-- Makefile
 +-- pyproject.toml
 +-- README.md
 ```
 
-## 依赖安装
+## 环境要求
 
-建议先创建虚拟环境，再安装项目依赖：
+- Python 3.12+
+- DeepSeek API Key
+- Tavily API Key
+
+## 安装依赖
+
+建议先创建虚拟环境，再以可编辑模式安装开发依赖：
 
 ```powershell
 python -m venv .venv
@@ -40,42 +64,113 @@ python -m venv .venv
 pip install -e .[dev]
 ```
 
-### 中国大陆用户：使用清华镜像源
-
-如果默认安装速度慢，或经常遇到超时，可以直接使用清华 PyPI 镜像：
+如果默认 PyPI 下载较慢，可以临时使用清华镜像：
 
 ```powershell
 pip install -e .[dev] -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
-如果你希望长期使用清华镜像，可以执行：
+## 配置环境变量
+
+复制示例环境文件：
 
 ```powershell
-pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+Copy-Item .env.example .env
 ```
 
-恢复为官方源：
+至少填写：
+
+```env
+DEEPSEEK_API_KEY=your-deepseek-api-key
+TAVILY_API_KEY=your-tavily-api-key
+```
+
+可以运行配置检查脚本：
 
 ```powershell
-pip config unset global.index-url
+python scripts/check_env.py
 ```
 
-## 快速开始
+注意：`app/config.py` 设置了 `extra="forbid"`，`.env` 中不要放未定义的应用配置项。
+
+## 本地运行
+
+当前 CLI 仍是最小入口，只验证配置加载和基础启动：
 
 ```powershell
 python -m app.main
 ```
 
-或者：
+或：
 
 ```powershell
 python scripts/run_cli.py
 ```
 
-## 后续计划
+完整研究流程会在后续 graph、runner 和 API commit 中实现。
 
-- 接入真实的 LLM、搜索和抓取能力。
-- 完善智能体图结构与状态流转。
-- 增加 HTTP API 和流式响应能力。
-- 扩展测试与开发工具链。
-- 补齐前端交互流程。
+## 工具层接口
+
+LLM 调用：
+
+```python
+from app.tools.llm import call_llm
+
+result = await call_llm(
+    [{"role": "user", "content": "用一句话解释 LangGraph"}],
+    json_mode=False,
+    temperature=0.3,
+    max_tokens=4096,
+)
+```
+
+搜索调用：
+
+```python
+from app.tools.search import search_multiple
+
+results = await search_multiple(
+    ["LangGraph multi-agent architecture", "Deep research agent design"],
+    top_k=5,
+)
+```
+
+## 测试
+
+运行完整测试：
+
+```powershell
+pytest
+```
+
+当前阶段重点测试：
+
+```powershell
+pytest tests/test_config.py tests/test_tools.py -v
+```
+
+如果 Windows 环境下 pytest 临时目录权限异常，可以指定仓库内临时目录：
+
+```powershell
+New-Item -ItemType Directory -Force -Path tmp_pytest
+pytest -q -p no:cacheprovider --basetemp="C:\code\ez-agent\tmp_pytest\all"
+```
+
+## 开发约定
+
+- 每个阶段只提交对应 commit 范围内的文件。
+- 不使用 `git add .`，避免把临时文件或本地指南误提交。
+- 所有函数需要类型标注和简短 docstring。
+- 业务代码中不直接使用 `print()`，CLI 最终输出和环境检查脚本除外。
+- API Key 等敏感配置统一通过 `SecretStr.get_secret_value()` 读取。
+
+## 当前推荐提交范围
+
+如果正在提交搜索工具阶段，只提交：
+
+```powershell
+git add app/domain/models.py app/tools/search.py tests/test_tools.py
+git commit -m "feat(tools): implement search tool with Tavily"
+```
+
+不要把本地开发指南、pytest 临时目录或其他无关文件加入该提交。
