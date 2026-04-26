@@ -2,10 +2,10 @@
 
 `ez-agent` 是一个面向自动化深度研究场景的 Python Agent 项目。当前仓库按分阶段
 commit 演进：配置与日志基础设施已经完成，工具层已经接入 LLM、Tavily 搜索、网页抓取
-和 Redis 缓存；核心状态模型与 planner、searcher、reader 节点已经开始落地。完整状态图、API、SSE、
-前端和部署会在后续 commit 中继续实现。
+和 Redis 缓存；核心状态模型、planner、searcher、reader、critic、writer 节点以及
+LangGraph 执行图已经落地。API、SSE、数据库 runner、前端和部署会在后续 commit 中继续实现。
 
-## 项目已实现和为实现功能
+## 项目已实现和未实现功能
 
 已完成：
 
@@ -36,11 +36,21 @@ commit 演进：配置与日志基础设施已经完成，工具层已经接入 
 - Reader 节点：`app/core/nodes.py` 提供异步 `reader_node()`，只消费
   `latest_search_results`，为结果分配连续 `source_id`，调用抓取摘要工具生成
   `ReadChunk`，并累加 `total_tokens`。
+- Critic 节点：`app/core/nodes.py` 提供异步 `critic_node()`，读取
+  `app/core/prompts/critic.txt`，通过 `call_llm(json_mode=True)` 判断证据是否充分，
+  在 `sufficient=False` 且 `next_queries=[]` 时回退到首个子问题，并只在继续搜索时递增
+  `iteration`。
+- Writer 节点：`app/core/nodes.py` 提供异步 `writer_node()`，读取
+  `app/core/prompts/writer.txt`，按 `requested_language` 生成最终报告，累加
+  `total_tokens`，并通过报告中的 `[source_id]` 引用回填 `Citation.used_in_report`。
+- LangGraph 执行图：`app/core/graph.py` 提供 `build_graph()` 和
+  `route_after_critic()`，串联 planner -> searcher -> reader -> critic，并根据
+  `max_iterations`、`TOKEN_BUDGET` 和 critic 决策进入 writer 或继续搜索。
+- CLI：`scripts/run_cli.py` 提供本地轻量运行入口，构造完整 `ResearchState`，通过
+  `build_graph()` 端到端运行研究流程，并将节点事件写入日志。
 
 尚未完成：
 
-- LangGraph 完整执行图。
-- Critic、Writer 节点。
 - FastAPI 路由、数据库层、SSE 事件流和 runner。
 - Streamlit 前端、Docker 部署和项目收尾文档。
 
@@ -121,20 +131,20 @@ python scripts/check_env.py
 
 ## 本地运行
 
-当前 CLI 仍是最小入口，只验证配置加载和基础启动：
+最小应用入口仍可用于验证配置加载：
 
 ```powershell
 python -m app.main
 ```
 
-或：
+本地研究流程可通过 CLI 运行：
 
 ```powershell
-python scripts/run_cli.py
+python scripts/run_cli.py "你的研究问题" --language zh --max-iterations 3
 ```
 
-完整研究流程会在后续 critic、writer、graph、runner 和 API commit
-中实现。
+CLI 会直接调用 LangGraph 执行图。运行时需要可用的 `DEEPSEEK_API_KEY` 和
+`TAVILY_API_KEY`，并会访问外部 LLM、搜索和网页抓取服务。
 
 ## 工具层接口
 
@@ -198,6 +208,16 @@ result = await planner_node(initial_state)
 sub_questions = result["sub_questions"]
 ```
 
+Graph 调用：
+
+```python
+from app.core.graph import build_graph
+
+graph = build_graph()
+final_state = await graph.ainvoke(initial_state)
+report = final_state["final_report"]
+```
+
 ## 测试
 
 运行完整测试：
@@ -209,7 +229,7 @@ pytest
 当前阶段重点测试：
 
 ```powershell
-pytest tests/test_config.py tests/test_tools.py tests/test_nodes.py -v
+pytest tests/test_config.py tests/test_tools.py tests/test_nodes.py tests/test_graph.py -v
 ```
 
 如果 Windows 环境下 pytest 临时目录权限异常，可以指定仓库内临时目录：

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 from app.core.state import ResearchState
-from app.domain.models import CriticDecision, EmitFn, FetchTarget
+from app.domain.models import Citation, CriticDecision, EmitFn, FetchTarget
 from app.infra.logger import logger
 from app.tools.llm import call_llm
 from app.tools.fetcher import fetch_and_summarize_batch
@@ -16,7 +17,9 @@ from app.tools.search import search_multiple
 _PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 _PLANNER_PROMPT_PATH = _PROMPT_DIR / "planner.txt"
 _CRITIC_PROMPT_PATH = _PROMPT_DIR / "critic.txt"
+_WRITER_PROMPT_PATH = _PROMPT_DIR / "writer.txt"
 _CHUNKS_SUMMARY_LIMIT = 6000
+_CITATION_PATTERN = re.compile(r"\[(?:source\s*)?(\d+)\]", re.IGNORECASE)
 
 
 def _load_prompt(path: Path) -> str:
@@ -279,3 +282,87 @@ async def critic_node(
         update["iteration"] = next_iteration
 
     return update
+
+
+def _build_writer_context(state: ResearchState) -> str:
+    """Build source context for the writer prompt."""
+    parts = [
+        (
+            f"[{chunk.source_id}] {chunk.title}\n"
+            f"URL: {chunk.url}\n"
+            f"Summary: {chunk.summary}"
+        )
+        for chunk in state["read_chunks"]
+    ]
+    return "\n\n".join(parts)
+
+
+def _citation_ids_used(report: str) -> set[int]:
+    """Extract source IDs cited by bracketed report references."""
+    return {int(match.group(1)) for match in _CITATION_PATTERN.finditer(report)}
+
+
+def _build_citations(state: ResearchState, report: str) -> list[Citation]:
+    """Build citation records and mark sources referenced by the final report."""
+    used_source_ids = _citation_ids_used(report)
+    return [
+        Citation(
+            source_id=chunk.source_id,
+            url=chunk.url,
+            title=chunk.title,
+            snippet=chunk.summary[:300],
+            used_in_report=chunk.source_id in used_source_ids,
+        )
+        for chunk in state["read_chunks"]
+    ]
+
+
+def _build_writer_messages(state: ResearchState) -> list[dict]:
+    """Build messages for the final report writer LLM call."""
+    prompt = _load_prompt(_WRITER_PROMPT_PATH)
+    language_name = "Chinese" if state["requested_language"] == "zh" else "English"
+    critic_summary = ""
+    if state["critic_decision"] is not None:
+        critic_summary = state["critic_decision"].model_dump_json()
+
+    return [
+        {"role": "system", "content": prompt},
+        {
+            "role": "user",
+            "content": (
+                f"Research query: {state['original_query']}\n"
+                f"Requested language: {language_name}\n"
+                f"Critic decision: {critic_summary}\n"
+                f"Source context:\n{_build_writer_context(state)}\n\n"
+                "Write the final report now. Cite sources with bracketed source "
+                "IDs like [1]."
+            ),
+        },
+    ]
+
+
+async def writer_node(
+    state: ResearchState,
+    *,
+    emit_fn: EmitFn | None = None,
+) -> dict:
+    """Write the final report and derive citation usage."""
+    if emit_fn is not None:
+        await emit_fn(
+            {
+                "type": "stage",
+                "stage": "writing",
+                "message": "Writing final report",
+            }
+        )
+        await emit_fn({"type": "writing", "message": "Writing final report"})
+
+    result = await call_llm(_build_writer_messages(state))
+    report = result.text.strip()
+
+    return {
+        "final_report": report,
+        "citations": _build_citations(state, report),
+        "status": "done",
+        "total_tokens": state["total_tokens"] + result.total_tokens,
+    }
