@@ -7,13 +7,16 @@ from pathlib import Path
 from typing import Any
 
 from app.core.state import ResearchState
-from app.domain.models import EmitFn, FetchTarget
+from app.domain.models import CriticDecision, EmitFn, FetchTarget
+from app.infra.logger import logger
 from app.tools.llm import call_llm
 from app.tools.fetcher import fetch_and_summarize_batch
 from app.tools.search import search_multiple
 
 _PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 _PLANNER_PROMPT_PATH = _PROMPT_DIR / "planner.txt"
+_CRITIC_PROMPT_PATH = _PROMPT_DIR / "critic.txt"
+_CHUNKS_SUMMARY_LIMIT = 6000
 
 
 def _load_prompt(path: Path) -> str:
@@ -179,3 +182,100 @@ async def reader_node(
         "latest_read_chunks": chunks,
         "total_tokens": state["total_tokens"] + total_tokens,
     }
+
+
+def _build_chunks_summary(state: ResearchState) -> str:
+    """Build a bounded source summary for the critic prompt."""
+    parts = [
+        (
+            f"[{chunk.source_id}] {chunk.title}\n"
+            f"URL: {chunk.url}\n"
+            f"Summary: {chunk.summary}"
+        )
+        for chunk in state["read_chunks"]
+    ]
+    return "\n\n".join(parts)[:_CHUNKS_SUMMARY_LIMIT]
+
+
+def _parse_critic_decision(text: str) -> CriticDecision:
+    """Parse critic JSON and return a validated decision."""
+    try:
+        payload: Any = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Critic returned invalid JSON") from exc
+
+    if not isinstance(payload, dict):
+        raise ValueError("Critic JSON must be an object")
+
+    return CriticDecision.model_validate(payload)
+
+
+def _build_critic_messages(state: ResearchState) -> list[dict]:
+    """Build messages for the critic LLM call."""
+    prompt = _load_prompt(_CRITIC_PROMPT_PATH)
+    return [
+        {"role": "system", "content": prompt},
+        {
+            "role": "user",
+            "content": (
+                f"Research query: {state['original_query']}\n"
+                f"Sub-questions: {json.dumps(state['sub_questions'], ensure_ascii=False)}\n"
+                f"Iteration: {state['iteration']}\n"
+                f"Source summaries:\n{_build_chunks_summary(state)}\n\n"
+                "Return JSON only."
+            ),
+        },
+    ]
+
+
+def _normalize_critic_decision(
+    decision: CriticDecision,
+    state: ResearchState,
+) -> CriticDecision:
+    """Apply required fallback behavior to a critic decision."""
+    if not decision.sufficient and not decision.next_queries:
+        decision.next_queries = state["sub_questions"][:1]
+        logger.warning(
+            "Critic returned empty next_queries; fallback to first sub-question"
+        )
+    return decision
+
+
+async def critic_node(
+    state: ResearchState,
+    *,
+    emit_fn: EmitFn | None = None,
+) -> dict:
+    """Evaluate whether the gathered evidence is sufficient for writing."""
+    if emit_fn is not None:
+        await emit_fn(
+            {
+                "type": "stage",
+                "stage": "criticizing",
+                "message": "Evaluating research coverage",
+            }
+        )
+
+    result = await call_llm(_build_critic_messages(state), json_mode=True)
+    decision = _normalize_critic_decision(_parse_critic_decision(result.text), state)
+    next_iteration = state["iteration"] + 1 if not decision.sufficient else state["iteration"]
+
+    if emit_fn is not None:
+        await emit_fn(
+            {
+                "type": "critic",
+                "sufficient": decision.sufficient,
+                "missing": decision.missing_aspects,
+                "next_queries": decision.next_queries,
+                "iteration": next_iteration,
+            }
+        )
+
+    update = {
+        "critic_decision": decision,
+        "total_tokens": state["total_tokens"] + result.total_tokens,
+    }
+    if not decision.sufficient:
+        update["iteration"] = next_iteration
+
+    return update

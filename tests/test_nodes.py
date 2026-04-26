@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.nodes import planner_node, reader_node, searcher_node
+from app.core.nodes import critic_node, planner_node, reader_node, searcher_node
 from app.core.state import ResearchState
 from app.domain.models import CriticDecision, LLMResult, ReadChunk, SearchResult
 
@@ -323,5 +323,163 @@ async def test_reader_node_emits_stage_and_reading_events(
             "type": "reading",
             "url": "https://example.com/a",
             "title": "Example A",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_critic_node_returns_decision_and_accumulates_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """critic_node should parse a decision and accumulate total tokens."""
+    state = _initial_state()
+    state["total_tokens"] = 30
+    state["read_chunks"] = [
+        ReadChunk(
+            source_id=1,
+            url="https://example.com/a",
+            title="Example A",
+            summary="Useful evidence",
+        )
+    ]
+    calls: list[dict] = []
+
+    async def fake_call_llm(
+        messages: list[dict],
+        *,
+        json_mode: bool = False,
+    ) -> LLMResult:
+        calls.append({"messages": messages, "json_mode": json_mode})
+        return LLMResult(
+            text=(
+                '{"sufficient": true, "missing_aspects": [], '
+                '"next_queries": [], "reasoning": "covered"}'
+            ),
+            total_tokens=11,
+        )
+
+    monkeypatch.setattr("app.core.nodes.call_llm", fake_call_llm)
+
+    result = await critic_node(state)
+
+    assert calls[0]["json_mode"] is True
+    assert "Source summaries:" in calls[0]["messages"][1]["content"]
+    assert result["critic_decision"].sufficient is True
+    assert result["total_tokens"] == 41
+    assert "iteration" not in result
+
+
+@pytest.mark.asyncio
+async def test_critic_node_truncates_chunks_summary_for_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """critic_node should keep source summaries within the configured limit."""
+    state = _initial_state()
+    state["read_chunks"] = [
+        ReadChunk(
+            source_id=1,
+            url="https://example.com/a",
+            title="Example A",
+            summary="a" * 7000,
+        )
+    ]
+    user_contents: list[str] = []
+
+    async def fake_call_llm(
+        messages: list[dict],
+        *,
+        json_mode: bool = False,
+    ) -> LLMResult:
+        user_contents.append(messages[1]["content"])
+        return LLMResult(
+            text=(
+                '{"sufficient": true, "missing_aspects": [], '
+                '"next_queries": [], "reasoning": "covered"}'
+            ),
+            total_tokens=1,
+        )
+
+    monkeypatch.setattr("app.core.nodes.call_llm", fake_call_llm)
+
+    await critic_node(state)
+
+    source_summary = user_contents[0].split("Source summaries:\n", 1)[1]
+    source_summary = source_summary.split("\n\nReturn JSON only.", 1)[0]
+    assert len(source_summary) == 6000
+
+
+@pytest.mark.asyncio
+async def test_critic_node_falls_back_when_next_queries_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Insufficient decisions without next queries should fall back safely."""
+    state = _initial_state()
+    state["sub_questions"] = ["original follow-up", "second question"]
+    state["iteration"] = 1
+    state["total_tokens"] = 10
+
+    async def fake_call_llm(
+        messages: list[dict],
+        *,
+        json_mode: bool = False,
+    ) -> LLMResult:
+        return LLMResult(
+            text=(
+                '{"sufficient": false, "missing_aspects": ["gap"], '
+                '"next_queries": [], "reasoning": "missing evidence"}'
+            ),
+            total_tokens=5,
+        )
+
+    monkeypatch.setattr("app.core.nodes.call_llm", fake_call_llm)
+
+    result = await critic_node(state)
+
+    assert result["iteration"] == 2
+    assert result["total_tokens"] == 15
+    assert result["critic_decision"].next_queries == ["original follow-up"]
+
+
+@pytest.mark.asyncio
+async def test_critic_node_emits_stage_and_decision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """critic_node should publish stage and critic events when emit_fn is provided."""
+    state = _initial_state()
+    state["iteration"] = 2
+    events: list[dict] = []
+
+    async def fake_call_llm(
+        messages: list[dict],
+        *,
+        json_mode: bool = False,
+    ) -> LLMResult:
+        return LLMResult(
+            text=(
+                '{"sufficient": false, "missing_aspects": ["fresh data"], '
+                '"next_queries": ["fresh data query"], "reasoning": "needs more"}'
+            ),
+            total_tokens=3,
+        )
+
+    async def emit(event: dict) -> None:
+        events.append(event)
+
+    monkeypatch.setattr("app.core.nodes.call_llm", fake_call_llm)
+
+    await critic_node(state, emit_fn=emit)
+
+    assert events == [
+        {
+            "type": "stage",
+            "stage": "criticizing",
+            "message": "Evaluating research coverage",
+        },
+        {
+            "type": "critic",
+            "sufficient": False,
+            "missing": ["fresh data"],
+            "next_queries": ["fresh data query"],
+            "iteration": 3,
         },
     ]
