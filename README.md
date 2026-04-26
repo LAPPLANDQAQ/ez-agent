@@ -50,7 +50,7 @@ Streamlit 前端和 Docker 部署文件已经落地。
 - CLI：`scripts/run_cli.py` 提供本地轻量运行入口，构造完整 `ResearchState`，通过
   `build_graph()` 端到端运行研究流程，并将节点事件写入日志。
 - 事件总线：`app/infra/cache.py` 提供异步 `publish()` 和 `subscribe()`，用于 session
-  级 live 事件流；`subscribe()` 只负责 live 事件，不回放历史。
+  级 live 事件流；Redis pub/sub 可用于跨进程推送，Redis 不可用时降级到进程内队列。
 - SSE 事件生成器：`app/api/sse.py` 提供 `event_generator()`，采用“先订阅 live、再读取
   历史、再去重消费 live”的顺序，使用 `event_id` 作为断点游标。
 - 数据库层：`app/infra/db.py` 使用 SQLAlchemy async，提供 session 创建、原子抢占启动、

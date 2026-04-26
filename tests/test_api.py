@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from app.api.routes import list_routes, stream_research_session
 from app.api.sse import event_generator
+from app.domain.errors import FetchProviderError, SearchProviderError
 from app.domain.models import Citation, CriticDecision
 from app.infra.cache import publish, subscribe
 from app.infra.db import (
@@ -116,6 +117,7 @@ async def test_stream_endpoint_claims_and_starts_once(
     response = await stream_research_session(request, session_id)
     second_response = await stream_research_session(request, session_id)
     await asyncio.gather(*request.app.state.research_tasks.values())
+    await asyncio.sleep(0)
 
     session = await get_session(session_id)
     assert response.status_code == 200
@@ -124,11 +126,18 @@ async def test_stream_endpoint_claims_and_starts_once(
     assert session["status"] == "running"
     assert len(started) == 1
     assert started[0]["requested_language"] == "zh"
+    assert request.app.state.research_tasks == {}
 
 
 @pytest.mark.asyncio
-async def test_publish_delivers_live_events_to_subscribers() -> None:
+async def test_publish_delivers_live_events_to_subscribers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """publish should deliver live events to active subscribers only."""
+    monkeypatch.setattr(
+        "app.infra.cache._get_redis",
+        lambda: (_ for _ in ()).throw(ConnectionError("redis down")),
+    )
     events = await subscribe("session-live")
 
     await publish("session-live", {"event_id": 1, "type": "stage", "stage": "x"})
@@ -143,6 +152,10 @@ async def test_event_generator_replays_history_then_live(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """event_generator should subscribe first, replay history, then stream live."""
+    monkeypatch.setattr(
+        "app.infra.cache._get_redis",
+        lambda: (_ for _ in ()).throw(ConnectionError("redis down")),
+    )
     history_calls: list[dict] = []
 
     async def fake_list_events(
@@ -179,6 +192,10 @@ async def test_event_generator_skips_duplicate_live_events(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Live events at or before the last history cursor should be skipped."""
+    monkeypatch.setattr(
+        "app.infra.cache._get_redis",
+        lambda: (_ for _ in ()).throw(ConnectionError("redis down")),
+    )
 
     async def fake_list_events(
         session_id: str,
@@ -298,3 +315,53 @@ async def test_runner_failure_maps_errors(
         "code": "E2002",
         "message": "LLM returned invalid JSON",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "code", "message"),
+    [
+        (SearchProviderError("All search queries failed"), "E3001", "Search provider failed"),
+        (FetchProviderError("All fetch targets failed"), "E3002", "Web fetch failed"),
+    ],
+)
+async def test_runner_maps_provider_errors(
+    api_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    code: str,
+    message: str,
+) -> None:
+    """run_research_session should map provider errors to frozen error codes."""
+    from app.core.runner import run_research_session
+
+    await init_db()
+    session_id = await create_session(
+        "How do research agents validate web sources?",
+        requested_language="en",
+        max_iterations=2,
+    )
+    await claim_session_start(session_id)
+    events: list[dict] = []
+
+    class FakeGraph:
+        async def ainvoke(self, state: dict) -> dict:
+            raise error
+
+    async def emit(event: dict) -> None:
+        events.append(event)
+
+    monkeypatch.setattr("app.core.runner.build_graph", lambda emit_fn=None: FakeGraph())
+
+    await run_research_session(
+        session_id,
+        query="How do research agents validate web sources?",
+        requested_language="en",
+        max_iterations=2,
+        emit_fn=emit,
+    )
+
+    session = await get_session(session_id)
+    assert session is not None
+    assert session["status"] == "failed"
+    assert events[-1] == {"type": "error", "code": code, "message": message}

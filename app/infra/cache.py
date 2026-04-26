@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 import time
 from typing import Any
@@ -14,6 +15,11 @@ from app.config import get_settings
 _redis_client: Redis | None = None
 _memory_cache: dict[str, tuple[float, str]] = {}
 _subscribers: dict[str, set[asyncio.Queue[dict]]] = {}
+
+
+def _event_channel(session_id: str) -> str:
+    """Build a Redis pub/sub channel name for a research session."""
+    return f"research_events:{session_id}"
 
 
 def _memory_get(key: str) -> str | None:
@@ -81,14 +87,24 @@ async def cache_setex(key: str, ttl: int, value: str) -> None:
 
 
 async def publish(session_id: str, event: dict) -> None:
-    """Publish a live event to local subscribers for one research session."""
+    """Publish a live event through Redis pub/sub with memory fallback."""
+    try:
+        await _get_redis().publish(
+            _event_channel(session_id),
+            json.dumps(event, ensure_ascii=False),
+        )
+    except Exception as exc:
+        from app.infra.logger import logger
+
+        logger.warning("Redis publish failed; using memory fallback | error={}", exc)
+
     queues = list(_subscribers.get(session_id, set()))
     for queue in queues:
         await queue.put(event)
 
 
-async def subscribe(session_id: str) -> AsyncIterator[dict]:
-    """Subscribe to live events for one session without replaying history."""
+def _memory_subscribe(session_id: str) -> AsyncIterator[dict]:
+    """Subscribe to live events through an in-process queue."""
     queue: asyncio.Queue[dict] = asyncio.Queue()
     subscribers = _subscribers.setdefault(session_id, set())
     subscribers.add(queue)
@@ -101,5 +117,40 @@ async def subscribe(session_id: str) -> AsyncIterator[dict]:
             subscribers.discard(queue)
             if not subscribers:
                 _subscribers.pop(session_id, None)
+
+    return iterator()
+
+
+async def subscribe(session_id: str) -> AsyncIterator[dict]:
+    """Subscribe to live events for one session without replaying history."""
+    channel = _event_channel(session_id)
+    try:
+        pubsub = _get_redis().pubsub()
+        await pubsub.subscribe(channel)
+    except Exception as exc:
+        from app.infra.logger import logger
+
+        logger.warning("Redis subscribe failed; using memory fallback | error={}", exc)
+        return _memory_subscribe(session_id)
+
+    async def iterator() -> AsyncIterator[dict]:
+        try:
+            async for message in pubsub.listen():
+                if message.get("type") != "message":
+                    continue
+                data = message.get("data")
+                if isinstance(data, bytes):
+                    data = data.decode("utf-8")
+                if isinstance(data, dict):
+                    yield data
+                else:
+                    yield json.loads(str(data))
+        finally:
+            await pubsub.unsubscribe(channel)
+            close = getattr(pubsub, "aclose", None) or getattr(pubsub, "close", None)
+            if close is not None:
+                result = close()
+                if asyncio.iscoroutine(result):
+                    await result
 
     return iterator()

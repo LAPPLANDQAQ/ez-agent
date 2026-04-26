@@ -10,6 +10,11 @@ __pycache__/
 dist/
 build/
 *.log
+*.db
+*.sqlite
+*.sqlite3
+*.egg-info/
+research.db
 
 
 # 保留示例文件不被 .env 规则排除

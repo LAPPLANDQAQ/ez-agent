@@ -9,6 +9,7 @@ import httpx
 import trafilatura
 
 from app.config import get_settings
+from app.domain.errors import FetchProviderError
 from app.domain.models import FetchTarget, ReadChunk
 from app.infra.cache import cache_get, cache_setex
 from app.tools.llm import call_llm
@@ -120,9 +121,11 @@ async def fetch_and_summarize_batch(
 
     chunks: list[ReadChunk] = []
     total_tokens = 0
+    failed_count = 0
 
     for target, result in zip(targets, gathered, strict=True):
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
+            failed_count += 1
             from app.infra.logger import logger
 
             logger.warning(
@@ -136,5 +139,8 @@ async def fetch_and_summarize_batch(
         chunk, tokens = result
         chunks.append(chunk)
         total_tokens += tokens
+
+    if failed_count == len(targets):
+        raise FetchProviderError("All fetch targets failed")
 
     return chunks, total_tokens
