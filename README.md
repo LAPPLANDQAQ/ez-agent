@@ -3,8 +3,8 @@
 `ez-agent` 是一个面向自动化深度研究场景的 Python Agent 项目。当前仓库按分阶段
 commit 演进：配置与日志基础设施已经完成，工具层已经接入 LLM、Tavily 搜索、网页抓取
 和 Redis 缓存；核心状态模型、planner、searcher、reader、critic、writer 节点、
-LangGraph 执行图、live 事件总线和 SSE 事件生成器已经落地。API、数据库 runner、
-前端和部署会在后续 commit 中继续实现。
+LangGraph 执行图、live 事件总线、SSE 事件生成器、FastAPI 路由、数据库层和 runner
+已经落地。前端和部署会在后续 commit 中继续实现。
 
 ## 项目已实现和未实现功能
 
@@ -53,10 +53,16 @@ LangGraph 执行图、live 事件总线和 SSE 事件生成器已经落地。API
   级 live 事件流；`subscribe()` 只负责 live 事件，不回放历史。
 - SSE 事件生成器：`app/api/sse.py` 提供 `event_generator()`，采用“先订阅 live、再读取
   历史、再去重消费 live”的顺序，使用 `event_id` 作为断点游标。
+- 数据库层：`app/infra/db.py` 使用 SQLAlchemy async，提供 session 创建、原子抢占启动、
+  状态更新、事件持久化、历史事件回放和 citation 持久化接口。
+- FastAPI API：`app/api/routes.py` 提供 `/health`、`/api/v1/research`、
+  `/api/v1/research/{session_id}` 和 `/api/v1/research/stream/{session_id}`。
+  POST 只创建 session；SSE 首次连接通过 `claim_session_start()` 启动 graph，重连只回放和订阅。
+- Runner：`app/core/runner.py` 统一组装 initial state、调用 graph、处理超时和异常映射、
+  更新 DB，并通过注入的 `emit_fn(event)` 发送 `done` 或 `error` 事件。
 
 尚未完成：
 
-- FastAPI 路由、数据库层和 runner。
 - Streamlit 前端、Docker 部署和项目收尾文档。
 
 ## 目录结构
@@ -151,6 +157,24 @@ python scripts/run_cli.py "你的研究问题" --language zh --max-iterations 3
 CLI 会直接调用 LangGraph 执行图。运行时需要可用的 `DEEPSEEK_API_KEY` 和
 `TAVILY_API_KEY`，并会访问外部 LLM、搜索和网页抓取服务。
 
+启动 API 服务：
+
+```powershell
+python -m app.main
+```
+
+创建研究 session：
+
+```powershell
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://localhost:8000/api/v1/research" `
+  -ContentType "application/json" `
+  -Body '{"query":"如何验证研究 Agent 的网页来源？","language":"zh","max_iterations":3}'
+```
+
+随后连接返回的 `stream_url` 获取 SSE 事件；首次连接会启动 graph，重连不会重复启动。
+
 ## 工具层接口
 
 LLM 调用：
@@ -231,6 +255,14 @@ from app.core.graph import build_graph
 graph = build_graph()
 final_state = await graph.ainvoke(initial_state)
 report = final_state["final_report"]
+```
+
+Runner 调用：
+
+```python
+from app.core.runner import run_research_cli
+
+result = await run_research_cli(query="How do agents validate sources?")
 ```
 
 ## 测试
