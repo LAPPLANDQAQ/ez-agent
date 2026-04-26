@@ -3,8 +3,8 @@
 `ez-agent` 是一个面向自动化深度研究场景的 Python Agent 项目。当前仓库按分阶段
 commit 演进：配置与日志基础设施已经完成，工具层已经接入 LLM、Tavily 搜索、网页抓取
 和 Redis 缓存；核心状态模型、planner、searcher、reader、critic、writer 节点、
-LangGraph 执行图、live 事件总线、SSE 事件生成器、FastAPI 路由、数据库层和 runner
-已经落地。前端和部署会在后续 commit 中继续实现。
+LangGraph 执行图、live 事件总线、SSE 事件生成器、FastAPI 路由、数据库层、runner
+和 Streamlit 前端已经落地。部署会在后续 commit 中继续实现。
 
 ## 项目已实现和未实现功能
 
@@ -60,10 +60,12 @@ LangGraph 执行图、live 事件总线、SSE 事件生成器、FastAPI 路由�
   POST 只创建 session；SSE 首次连接通过 `claim_session_start()` 启动 graph，重连只回放和订阅。
 - Runner：`app/core/runner.py` 统一组装 initial state、调用 graph、处理超时和异常映射、
   更新 DB，并通过注入的 `emit_fn(event)` 发送 `done` 或 `error` 事件。
+- Streamlit 前端：`frontend/app.py` 提供同步 `httpx` API 客户端和 SSE 客户端，
+  可创建 session、实时展示事件、渲染最终报告，并在 sidebar 显示历史 session。
 
 尚未完成：
 
-- Streamlit 前端、Docker 部署和项目收尾文档。
+- Docker 部署和项目收尾文档。
 
 ## 目录结构
 
@@ -174,6 +176,19 @@ Invoke-RestMethod `
 ```
 
 随后连接返回的 `stream_url` 获取 SSE 事件；首次连接会启动 graph，重连不会重复启动。
+
+启动前端：
+
+```powershell
+streamlit run frontend/app.py
+```
+
+前端默认连接 `http://localhost:8000`，可以通过环境变量覆盖：
+
+```powershell
+$env:EZ_AGENT_API_BASE_URL="http://localhost:8000"
+streamlit run frontend/app.py
+```
 
 ## 工具层接口
 
