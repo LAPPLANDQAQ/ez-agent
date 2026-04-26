@@ -1,7 +1,9 @@
-"""Redis cache helpers with an in-process fallback."""
+"""Redis cache and live event bus helpers with in-process fallbacks."""
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
 import time
 from typing import Any
 
@@ -11,6 +13,7 @@ from app.config import get_settings
 
 _redis_client: Redis | None = None
 _memory_cache: dict[str, tuple[float, str]] = {}
+_subscribers: dict[str, set[asyncio.Queue[dict]]] = {}
 
 
 def _memory_get(key: str) -> str | None:
@@ -75,3 +78,28 @@ async def cache_setex(key: str, ttl: int, value: str) -> None:
 
         logger.warning("Redis cache set failed; using memory fallback | error={}", exc)
         _memory_setex(key, ttl, value)
+
+
+async def publish(session_id: str, event: dict) -> None:
+    """Publish a live event to local subscribers for one research session."""
+    queues = list(_subscribers.get(session_id, set()))
+    for queue in queues:
+        await queue.put(event)
+
+
+async def subscribe(session_id: str) -> AsyncIterator[dict]:
+    """Subscribe to live events for one session without replaying history."""
+    queue: asyncio.Queue[dict] = asyncio.Queue()
+    subscribers = _subscribers.setdefault(session_id, set())
+    subscribers.add(queue)
+
+    async def iterator() -> AsyncIterator[dict]:
+        try:
+            while True:
+                yield await queue.get()
+        finally:
+            subscribers.discard(queue)
+            if not subscribers:
+                _subscribers.pop(session_id, None)
+
+    return iterator()
