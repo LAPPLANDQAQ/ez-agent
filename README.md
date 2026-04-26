@@ -2,8 +2,9 @@
 
 `ez-agent` 是一个面向自动化深度研究场景的 Python Agent 项目。当前仓库按分阶段
 commit 演进：配置与日志基础设施已经完成，工具层已经接入 LLM、Tavily 搜索、网页抓取
-和 Redis 缓存；核心状态模型、planner、searcher、reader、critic、writer 节点以及
-LangGraph 执行图已经落地。API、SSE、数据库 runner、前端和部署会在后续 commit 中继续实现。
+和 Redis 缓存；核心状态模型、planner、searcher、reader、critic、writer 节点、
+LangGraph 执行图、live 事件总线和 SSE 事件生成器已经落地。API、数据库 runner、
+前端和部署会在后续 commit 中继续实现。
 
 ## 项目已实现和未实现功能
 
@@ -48,10 +49,14 @@ LangGraph 执行图已经落地。API、SSE、数据库 runner、前端和部署
   `max_iterations`、`TOKEN_BUDGET` 和 critic 决策进入 writer 或继续搜索。
 - CLI：`scripts/run_cli.py` 提供本地轻量运行入口，构造完整 `ResearchState`，通过
   `build_graph()` 端到端运行研究流程，并将节点事件写入日志。
+- 事件总线：`app/infra/cache.py` 提供异步 `publish()` 和 `subscribe()`，用于 session
+  级 live 事件流；`subscribe()` 只负责 live 事件，不回放历史。
+- SSE 事件生成器：`app/api/sse.py` 提供 `event_generator()`，采用“先订阅 live、再读取
+  历史、再去重消费 live”的顺序，使用 `event_id` 作为断点游标。
 
 尚未完成：
 
-- FastAPI 路由、数据库层、SSE 事件流和 runner。
+- FastAPI 路由、数据库层和 runner。
 - Streamlit 前端、Docker 部署和项目收尾文档。
 
 ## 目录结构
@@ -199,6 +204,16 @@ await cache_setex("example:key", 60, "value")
 value = await cache_get("example:key")
 ```
 
+事件总线：
+
+```python
+from app.infra.cache import publish, subscribe
+
+events = await subscribe("session-id")
+await publish("session-id", {"event_id": 1, "type": "stage", "stage": "planning"})
+event = await events.__anext__()
+```
+
 Planner 节点：
 
 ```python
@@ -229,7 +244,7 @@ pytest
 当前阶段重点测试：
 
 ```powershell
-pytest tests/test_config.py tests/test_tools.py tests/test_nodes.py tests/test_graph.py -v
+pytest tests/test_config.py tests/test_tools.py tests/test_nodes.py tests/test_graph.py tests/test_api.py -v
 ```
 
 如果 Windows 环境下 pytest 临时目录权限异常，可以指定仓库内临时目录：
