@@ -3,8 +3,8 @@
 `ez-agent` 是一个面向自动化深度研究场景的 Python Agent 项目。当前仓库按分阶段
 commit 演进：配置与日志基础设施已经完成，工具层已经接入 LLM、Tavily 搜索、网页抓取
 和 Redis 缓存；核心状态模型、planner、searcher、reader、critic、writer 节点、
-LangGraph 执行图、live 事件总线、SSE 事件生成器、FastAPI 路由、数据库层、runner
-和 Streamlit 前端已经落地。部署会在后续 commit 中继续实现。
+LangGraph 执行图、live 事件总线、SSE 事件生成器、FastAPI 路由、数据库层、runner、
+Streamlit 前端和 Docker 部署文件已经落地。
 
 ## 项目已实现和未实现功能
 
@@ -62,10 +62,8 @@ LangGraph 执行图、live 事件总线、SSE 事件生成器、FastAPI 路由�
   更新 DB，并通过注入的 `emit_fn(event)` 发送 `done` 或 `error` 事件。
 - Streamlit 前端：`frontend/app.py` 提供同步 `httpx` API 客户端和 SSE 客户端，
   可创建 session、实时展示事件、渲染最终报告，并在 sidebar 显示历史 session。
-
-尚未完成：
-
-- Docker 部署和项目收尾文档。
+- 部署：`deploy/` 提供 API、frontend Dockerfile 和 `docker-compose.yml`，
+  `Makefile` 提供本地运行、测试、lint、eval 和 Docker 编排命令。
 
 ## 目录结构
 
@@ -190,6 +188,41 @@ $env:EZ_AGENT_API_BASE_URL="http://localhost:8000"
 streamlit run frontend/app.py
 ```
 
+运行一次本地评估：
+
+```powershell
+python scripts/eval.py "如何验证研究 Agent 的网页来源？" --language zh
+```
+
+也可以通过 Makefile 调用：
+
+```powershell
+make test
+make lint
+make api
+make frontend
+```
+
+## Docker 部署
+
+先准备 `.env`，至少填写 `DEEPSEEK_API_KEY` 和 `TAVILY_API_KEY`。然后启动整套服务：
+
+```powershell
+docker compose -f deploy/docker-compose.yml up --build
+```
+
+服务端口：
+
+- API: `http://localhost:8000`
+- Frontend: `http://localhost:8501`
+- Redis: `localhost:6379`
+
+关闭服务：
+
+```powershell
+docker compose -f deploy/docker-compose.yml down
+```
+
 ## 工具层接口
 
 LLM 调用：
@@ -292,6 +325,12 @@ pytest
 
 ```powershell
 pytest tests/test_config.py tests/test_tools.py tests/test_nodes.py tests/test_graph.py tests/test_api.py -v
+```
+
+静态检查：
+
+```powershell
+ruff check app scripts tests frontend
 ```
 
 如果 Windows 环境下 pytest 临时目录权限异常，可以指定仓库内临时目录：
