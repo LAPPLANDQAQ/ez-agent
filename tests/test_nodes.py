@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.nodes import critic_node, planner_node, reader_node, searcher_node
+from app.core.nodes import (
+    critic_node,
+    planner_node,
+    reader_node,
+    searcher_node,
+    writer_node,
+)
 from app.core.state import ResearchState
 from app.domain.models import CriticDecision, LLMResult, ReadChunk, SearchResult
 
@@ -482,4 +488,74 @@ async def test_critic_node_emits_stage_and_decision(
             "next_queries": ["fresh data query"],
             "iteration": 3,
         },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_writer_node_returns_report_citations_and_token_total(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """writer_node should write the final report and mark cited sources."""
+    state = _initial_state()
+    state["requested_language"] = "en"
+    state["total_tokens"] = 50
+    state["read_chunks"] = [
+        ReadChunk(
+            source_id=1,
+            url="https://example.com/a",
+            title="Example A",
+            summary="Summary A",
+        ),
+        ReadChunk(
+            source_id=2,
+            url="https://example.com/b",
+            title="Example B",
+            summary="Summary B",
+        ),
+    ]
+    calls: list[dict] = []
+
+    async def fake_call_llm(messages: list[dict]) -> LLMResult:
+        calls.append({"messages": messages})
+        return LLMResult(text="Final answer with evidence [1].", total_tokens=19)
+
+    monkeypatch.setattr("app.core.nodes.call_llm", fake_call_llm)
+
+    result = await writer_node(state)
+
+    assert "Requested language: English" in calls[0]["messages"][1]["content"]
+    assert result["final_report"] == "Final answer with evidence [1]."
+    assert result["status"] == "done"
+    assert result["total_tokens"] == 69
+    assert [citation.source_id for citation in result["citations"]] == [1, 2]
+    assert [citation.used_in_report for citation in result["citations"]] == [
+        True,
+        False,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_writer_node_emits_writing_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """writer_node should publish writing stage events when emit_fn is provided."""
+    events: list[dict] = []
+
+    async def fake_call_llm(messages: list[dict]) -> LLMResult:
+        return LLMResult(text="报告 [1]", total_tokens=1)
+
+    async def emit(event: dict) -> None:
+        events.append(event)
+
+    monkeypatch.setattr("app.core.nodes.call_llm", fake_call_llm)
+
+    await writer_node(_initial_state(), emit_fn=emit)
+
+    assert events == [
+        {
+            "type": "stage",
+            "stage": "writing",
+            "message": "Writing final report",
+        },
+        {"type": "writing", "message": "Writing final report"},
     ]
