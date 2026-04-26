@@ -10,6 +10,7 @@ from uuid import uuid4
 from app.config import get_settings
 from app.core.graph import build_graph
 from app.core.state import ResearchState
+from app.domain.errors import FetchProviderError, SearchProviderError
 from app.domain.models import EmitFn
 from app.infra.db import save_citations, update_session
 from app.infra.logger import logger
@@ -46,16 +47,15 @@ def _error_mapping(exc: BaseException) -> tuple[str, str, Literal["failed", "tim
     """Map execution exceptions to public error codes and DB statuses."""
     if isinstance(exc, asyncio.TimeoutError):
         return "E4002", "Research session timed out", "timeout"
+    if isinstance(exc, SearchProviderError):
+        return "E3001", "Search provider failed", "failed"
+    if isinstance(exc, FetchProviderError):
+        return "E3002", "Web fetch failed", "failed"
     if isinstance(exc, RuntimeError):
         return "E2001", "All LLM models failed", "failed"
     if isinstance(exc, ValueError):
         return "E2002", "LLM returned invalid JSON", "failed"
 
-    message = str(exc).lower()
-    if "search" in message:
-        return "E3001", "Search provider failed", "failed"
-    if "fetch" in message or "read" in message:
-        return "E3002", "Web fetch failed", "failed"
     return "E5001", "Unknown research error", "failed"
 
 

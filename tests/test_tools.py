@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from app.domain.errors import FetchProviderError, SearchProviderError
 from app.domain.models import FetchTarget, LLMResult, ReadChunk, SearchResult
 from app.infra.cache import cache_get, cache_setex
 from app.tools.fetcher import fetch_and_summarize_batch
@@ -341,6 +342,27 @@ async def test_search_multiple_keeps_successful_queries_when_one_fails(
 
 
 @pytest.mark.asyncio
+async def test_search_multiple_raises_when_all_queries_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All search query failures should surface as a provider error."""
+
+    class FakeAsyncTavilyClient:
+        """Fake Tavily client that always fails."""
+
+        def __init__(self, *, api_key: str) -> None:
+            pass
+
+        async def search(self, **kwargs: Any) -> dict[str, list[dict[str, Any]]]:
+            raise TimeoutError("search timeout")
+
+    monkeypatch.setattr("app.tools.search.AsyncTavilyClient", FakeAsyncTavilyClient)
+    with patch.dict(os.environ, _required_env(), clear=False):
+        with pytest.raises(SearchProviderError, match="All search queries failed"):
+            await search_multiple(["bad", "also bad"])
+
+
+@pytest.mark.asyncio
 async def test_search_multiple_ignores_blank_queries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -578,3 +600,39 @@ async def test_fetch_and_summarize_batch_skips_failed_targets(
 
     assert [chunk.url for chunk in chunks] == ["https://example.com/good"]
     assert total_tokens == 5
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_summarize_batch_raises_when_all_targets_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All fetch target failures should surface as a provider error."""
+
+    class FakeAsyncClient:
+        """Fake client that always fails."""
+
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            pass
+
+        async def get(self, url: str) -> FakeHttpResponse:
+            raise TimeoutError("fetch timeout")
+
+    async def fake_cache_get(key: str) -> None:
+        return None
+
+    monkeypatch.setattr("app.tools.fetcher.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("app.tools.fetcher.cache_get", fake_cache_get)
+
+    targets = [
+        FetchTarget(url="https://example.com/a", title="A", source_id=1),
+        FetchTarget(url="https://example.com/b", title="B", source_id=2),
+    ]
+    with patch.dict(os.environ, _required_env(), clear=False):
+        with pytest.raises(FetchProviderError, match="All fetch targets failed"):
+            await fetch_and_summarize_batch(targets, "agent")

@@ -8,6 +8,7 @@ from typing import Any
 from tavily import AsyncTavilyClient
 
 from app.config import get_settings
+from app.domain.errors import SearchProviderError
 from app.domain.models import SearchResult
 
 
@@ -87,9 +88,11 @@ async def search_multiple(
 
     seen_urls: set[str] = set()
     deduplicated: list[SearchResult] = []
+    failed_count = 0
 
     for (index, query), result in zip(indexed_queries, gathered, strict=True):
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
+            failed_count += 1
             from app.infra.logger import logger
 
             logger.warning(
@@ -105,5 +108,8 @@ async def search_multiple(
                 continue
             seen_urls.add(item.url)
             deduplicated.append(item)
+
+    if failed_count == len(indexed_queries):
+        raise SearchProviderError("All search queries failed")
 
     return deduplicated

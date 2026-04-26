@@ -28,6 +28,11 @@ def list_routes() -> list[str]:
     return ["/health", "/api/v1/research", "/api/v1/research/stream/{session_id}"]
 
 
+def _forget_task(tasks: dict[str, asyncio.Task], session_id: str) -> None:
+    """Remove a completed research task from the app-level registry."""
+    tasks.pop(session_id, None)
+
+
 @router.get("/health")
 async def health() -> dict[str, str]:
     """Return API health status."""
@@ -98,6 +103,9 @@ async def stream_research_session(
             )
         )
         request.app.state.research_tasks[session_id] = task
+        task.add_done_callback(
+            lambda _task: _forget_task(request.app.state.research_tasks, session_id)
+        )
 
     return EventSourceResponse(
         event_generator(session_id, after_event_id=after_event_id)
