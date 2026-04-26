@@ -16,6 +16,7 @@ from app.infra.db import (
     claim_session_start,
     create_session,
     get_session,
+    list_citations,
     list_sessions,
     save_single_event,
 )
@@ -72,6 +73,7 @@ async def get_research_session(session_id: str) -> dict:
     session = await get_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
+    session["citations"] = await list_citations(session_id)
     return session
 
 

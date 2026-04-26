@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.routes import list_routes, stream_research_session
+from app.api.routes import get_research_session, list_routes, stream_research_session
 from app.api.sse import event_generator
 from app.domain.errors import FetchProviderError, SearchProviderError
 from app.domain.models import Citation, CriticDecision
@@ -21,6 +21,7 @@ from app.infra.db import (
     get_session,
     init_db,
     list_events,
+    save_citations,
     save_single_event,
 )
 from app.main import app
@@ -74,6 +75,41 @@ async def test_database_session_lifecycle(api_env: None) -> None:
 
     events = await list_events(session_id, after_event_id=0)
     assert [item["event_id"] for item in events] == [1]
+
+
+@pytest.mark.asyncio
+async def test_get_research_session_includes_citations(api_env: None) -> None:
+    """Session detail should include persisted citation records for history views."""
+    await init_db()
+    session_id = await create_session(
+        "How do research agents validate sources?",
+        requested_language="en",
+        max_iterations=2,
+    )
+    await save_citations(
+        session_id,
+        [
+            {
+                "source_id": 2,
+                "url": "https://example.com/b",
+                "title": "Example B",
+                "snippet": "B",
+                "used_in_report": False,
+            },
+            {
+                "source_id": 1,
+                "url": "https://example.com/a",
+                "title": "Example A",
+                "snippet": "A",
+                "used_in_report": True,
+            },
+        ],
+    )
+
+    detail = await get_research_session(session_id)
+
+    assert [citation["source_id"] for citation in detail["citations"]] == [1, 2]
+    assert detail["citations"][0]["used_in_report"] is True
 
 
 def test_create_research_endpoint_returns_created(api_env: None) -> None:

@@ -61,7 +61,10 @@ Streamlit 前端和 Docker 部署文件已经落地。
 - Runner：`app/core/runner.py` 统一组装 initial state、调用 graph、处理超时和异常映射、
   更新 DB，并通过注入的 `emit_fn(event)` 发送 `done` 或 `error` 事件。
 - Streamlit 前端：`frontend/app.py` 提供同步 `httpx` API 客户端和 SSE 客户端，
-  可创建 session、实时展示事件、渲染最终报告，并在 sidebar 显示历史 session。
+  并拆分出 `api_client.py`、`state.py`、`components.py` 和 `styles.py`。前端采用研究
+  流水线可视化工作台布局，可创建 session、实时展示事件、渲染最终报告，在 sidebar
+  显示历史 session，并提供全局中文/英文界面与报告语言切换。页面内置示例问题、运行进度、
+  session 元信息、来源追踪、引用面板和报告区域。
 - 部署：`deploy/` 提供 API、frontend Dockerfile 和 `docker-compose.yml`，
   `Makefile` 提供本地运行、测试、lint、eval 和 Docker 编排命令。
 
@@ -79,6 +82,11 @@ ez-agent/
 |   +-- config.py
 |   +-- main.py
 +-- frontend/
+|   +-- app.py
+|   +-- api_client.py
+|   +-- state.py
+|   +-- components.py
+|   +-- styles.py
 +-- scripts/
 +-- tests/
 +-- .env.example
@@ -140,15 +148,46 @@ python scripts/check_env.py
 
 注意：`app/config.py` 设置了 `extra="forbid"`，`.env` 中不要放未定义的应用配置项。
 
-## 本地运行
-
-最小应用入口仍可用于验证配置加载：
+启动前也建议检查默认端口是否已被旧进程占用：
 
 ```powershell
-python -m app.main
+python scripts/check_ports.py
 ```
 
-本地研究流程可通过 CLI 运行：
+如果看到 `[BUSY] port 8000` 或 `[BUSY] port 8501`，说明对应服务已经在运行，或者旧进程
+没有关闭。此时不要重复启动同一个端口；可以先关闭旧进程，或改用新的端口。
+
+## 本地运行
+
+推荐使用一键启动。Windows 下可以直接双击项目根目录的 `start.bat`，或在终端运行：
+
+```powershell
+python scripts/start_dev.py
+```
+
+启动器会自动完成：
+
+- 检查 `.env` 配置是否能加载
+- 检查并避让 `8000` / `8501` 端口冲突
+- 同时启动 FastAPI 后端和 Streamlit 前端
+- 自动把前端连接到实际启动的 API 地址
+- 打开浏览器并打印访问地址
+
+如果不想自动打开浏览器：
+
+```powershell
+python scripts/start_dev.py --no-browser
+```
+
+如果想指定端口：
+
+```powershell
+python scripts/start_dev.py --api-port 8001 --frontend-port 8502
+```
+
+启动后保持这个窗口打开。按 `Ctrl+C` 会停止由启动器创建的服务。
+
+本地研究流程也可通过 CLI 运行：
 
 ```powershell
 python scripts/run_cli.py "你的研究问题" --language zh --max-iterations 3
@@ -157,9 +196,20 @@ python scripts/run_cli.py "你的研究问题" --language zh --max-iterations 3
 CLI 会直接调用 LangGraph 执行图。运行时需要可用的 `DEEPSEEK_API_KEY` 和
 `TAVILY_API_KEY`，并会访问外部 LLM、搜索和网页抓取服务。
 
-启动 API 服务：
+### 手动启动方式
+
+如需手动调试，也可以分别启动 API 和前端。
+
+启动 API：
 
 ```powershell
+python -m app.main
+```
+
+如果 `8000` 已被占用，可以临时改用其他端口：
+
+```powershell
+$env:API_PORT="8001"
 python -m app.main
 ```
 
@@ -181,12 +231,68 @@ Invoke-RestMethod `
 streamlit run frontend/app.py
 ```
 
-前端默认连接 `http://localhost:8000`，可以通过环境变量覆盖：
+前端默认连接 `http://localhost:8000`。页面左侧提供全局中文/英文切换，切换后界面文案
+和新建研究的报告语言会同步更新。API 地址可以通过环境变量覆盖：
 
 ```powershell
 $env:EZ_AGENT_API_BASE_URL="http://localhost:8000"
 streamlit run frontend/app.py
 ```
+
+如果 API 改到了 `8001`，前端也要同步改地址：
+
+```powershell
+$env:EZ_AGENT_API_BASE_URL="http://localhost:8001"
+streamlit run frontend/app.py
+```
+
+如果 `8501` 已被占用，可以改 Streamlit 端口：
+
+```powershell
+streamlit run frontend/app.py --server.port 8502
+```
+
+也兼容旧变量名 `EZ_AGENT_API`：
+
+```powershell
+$env:EZ_AGENT_API="http://localhost:8000"
+streamlit run frontend/app.py
+```
+
+## 前端工作台
+
+前端是基于 Streamlit + httpx 的同步 SSE 客户端，定位不是简单的输入输出框，而是
+“研究流水线可视化工作台”。它将后端事件归约成前端快照，再用组件渲染当前状态。
+
+文件结构：
+
+```text
+frontend/
++-- __init__.py
++-- app.py            # 主入口：页面布局、状态机、流式驱动
++-- api_client.py     # HTTP + 手写 SSE 解析
++-- state.py          # SessionSnapshot + reduce_event 事件归约器
++-- components.py     # pipeline / stats / sources / report 等 UI 组件
++-- styles.py         # 设计令牌和全局 CSS
+```
+
+核心特性：
+
+- 流水线可视化：规划、检索、阅读、反思、写作 5 个阶段按事件推进。
+- 实时事件流：逐条展示 `stage`、`sub_questions`、`searching`、`reading`、`critic`、
+  `writing`、`done` 和 `error` 事件。
+- 来源追踪：根据阅读事件维护 URL 状态，并在最终报告下方显示引用。
+- 运行指标：展示 token、迭代轮次、耗时和完成原因。
+- 历史侧栏：读取最近 session，打开历史会话时展示报告和持久化引用。
+- 断线续接：使用 `event_id` 游标，通过 `Last-Event-ID` 与 `after_event_id` 精确续接。
+
+前后端契约：
+
+- `POST /api/v1/research` 只创建会话，不启动 graph。
+- `GET /api/v1/research/stream/{session_id}` 在首次连接时原子抢占启动 graph。
+- SSE 服务端先回放历史事件，再推送 live 事件；前端按 `event_id` 去重。
+- `finish_reason="token_budget_exceeded"` 是软上限完成，不作为错误。
+- `E4002` 映射为 timeout，其余执行错误映射为 failed。
 
 运行一次本地评估：
 

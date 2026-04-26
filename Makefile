@@ -1,13 +1,22 @@
 PYTHON ?= python
 COMPOSE ?= docker compose -f deploy/docker-compose.yml
 
-.PHONY: api frontend cli test lint eval docker-up docker-down
+.PHONY: dev api frontend cli test lint eval check-env check-ports docker-up docker-down
+
+dev:
+	$(PYTHON) scripts/start_dev.py
 
 api:
 	$(PYTHON) -m app.main
 
 frontend:
 	streamlit run frontend/app.py
+
+check-env:
+	$(PYTHON) scripts/check_env.py
+
+check-ports:
+	$(PYTHON) scripts/check_ports.py
 
 cli:
 	$(PYTHON) scripts/run_cli.py "$(QUERY)"

@@ -44,6 +44,7 @@ class SessionDetail(SessionSummary):
     final_report: str | None = None
     error_message: str | None = None
     duration_ms: int | None = None
+    citations: list[dict] = Field(default_factory=list)
 
 
 class ErrorResponse(BaseModel):
