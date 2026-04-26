@@ -63,7 +63,10 @@ observability = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["app*"]
+include = ["app*", "frontend*"]
+
+[tool.setuptools.package-data]
+"app.core" = ["prompts/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

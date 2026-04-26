@@ -67,11 +67,14 @@ def setup_file_sink(log_dir: str | Path | None = None) -> int:
     if _FILE_SINK_ID is not None:
         return _FILE_SINK_ID
 
-    log_dir = log_dir or os.getenv("EZ_AGENT_LOG_DIR", "logs")
-    Path(log_dir).mkdir(parents=True, exist_ok=True)
+    raw_log_dir = log_dir
+    if raw_log_dir is None:
+        raw_log_dir = os.getenv("EZ_AGENT_LOG_DIR") or "logs"
+    resolved_log_dir = Path(raw_log_dir)
+    resolved_log_dir.mkdir(parents=True, exist_ok=True)
 
     _FILE_SINK_ID = logger.add(
-        f"{log_dir}/agent_{{time:YYYYMMDD}}.log",
+        str(resolved_log_dir / "agent_{time:YYYYMMDD}.log"),
         level="DEBUG",
         rotation="1 day",
         retention="7 days",
@@ -83,7 +86,7 @@ def setup_file_sink(log_dir: str | Path | None = None) -> int:
     settings = get_settings()
     logger.info(
         "File sink initialized | dir={} env={} level={}",
-        log_dir, settings.APP_ENV, settings.LOG_LEVEL,
+        resolved_log_dir, settings.APP_ENV, settings.LOG_LEVEL,
     )
     return _FILE_SINK_ID
 

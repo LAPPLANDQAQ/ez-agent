@@ -16,21 +16,21 @@ def main() -> None:
     try:
         from app.config import get_settings
     except ImportError as e:
-        print(f"\n❌ 依赖未安装: {e}")
+        print(f"\n[ERROR] 依赖未安装: {e}")
         print("\n请运行: pip install -e '.[dev]'")
         sys.exit(2)
 
     try:
         settings = get_settings()
     except Exception as e:
-        print(f"\n❌ 配置加载失败: {e}")
+        print(f"\n[ERROR] 配置加载失败: {e}")
         print("\n请检查:")
         print("  1. 是否已创建 .env 文件(cp .env.example .env)")
         print("  2. 是否已填入 DEEPSEEK_API_KEY 和 TAVILY_API_KEY")
         print("  3. .env 里是否有未在 app/config.py 定义的变量(extra=forbid)")
         sys.exit(1)
 
-    print("\n✅ 配置加载成功!\n")
+    print("\n[OK] 配置加载成功!\n")
     print(f"  APP_ENV          = {settings.APP_ENV}")
     print(f"  LOG_LEVEL        = {settings.LOG_LEVEL}")
     print(f"  API_PORT         = {settings.API_PORT}")
@@ -44,9 +44,9 @@ def main() -> None:
 
     warnings = []
     if settings.DEEPSEEK_API_KEY.get_secret_value().startswith("sk-your"):
-        warnings.append("  ⚠️  DEEPSEEK_API_KEY 仍是占位符, 请替换为真实 Key")
+        warnings.append("  [WARN] DEEPSEEK_API_KEY 仍是占位符, 请替换为真实 Key")
     if settings.TAVILY_API_KEY.get_secret_value().startswith("tvly-your"):
-        warnings.append("  ⚠️  TAVILY_API_KEY 仍是占位符, 请替换为真实 Key")
+        warnings.append("  [WARN] TAVILY_API_KEY 仍是占位符, 请替换为真实 Key")
 
     if warnings:
         print("警告:")
@@ -54,7 +54,7 @@ def main() -> None:
             print(w)
         print()
     else:
-        print("  🎉 所有必填 Key 已配置\n")
+        print("  [OK] 所有必填 Key 已配置\n")
 
 
 if __name__ == "__main__":

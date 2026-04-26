@@ -176,7 +176,7 @@ async def claim_session_start(session_id: str) -> bool:
             .values(status="running", updated_at=_now())
         )
         await db.commit()
-        return result.rowcount == 1
+        return getattr(result, "rowcount", 0) == 1
 
 
 async def update_session(session_id: str, **kwargs: Any) -> None:
@@ -201,6 +201,27 @@ async def get_session(session_id: str) -> dict | None:
     if session is None:
         return None
     return _session_to_dict(session)
+
+
+async def list_citations(session_id: str) -> list[dict]:
+    """Return persisted citation records for one session."""
+    async with _get_session_factory()() as db:
+        result = await db.execute(
+            select(CitationRecord)
+            .where(CitationRecord.session_id == session_id)
+            .order_by(asc(CitationRecord.source_id))
+        )
+        citations = result.scalars().all()
+    return [
+        {
+            "source_id": citation.source_id,
+            "url": citation.url,
+            "title": citation.title,
+            "snippet": citation.snippet,
+            "used_in_report": citation.used_in_report,
+        }
+        for citation in citations
+    ]
 
 
 async def list_sessions(limit: int = 20) -> list[dict]:

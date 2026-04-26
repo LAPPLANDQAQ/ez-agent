@@ -33,14 +33,15 @@ def _build_client(
     if json_mode:
         model_kwargs["response_format"] = {"type": "json_object"}
 
-    return ChatOpenAI(
-        model=model_name,
-        api_key=settings.DEEPSEEK_API_KEY.get_secret_value(),
-        base_url=settings.DEEPSEEK_BASE_URL,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        model_kwargs=model_kwargs,
-    )
+    client_kwargs: dict[str, Any] = {
+        "model": model_name,
+        "api_key": settings.DEEPSEEK_API_KEY.get_secret_value(),
+        "base_url": settings.DEEPSEEK_BASE_URL,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "model_kwargs": model_kwargs,
+    }
+    return ChatOpenAI(**client_kwargs)
 
 
 def _extract_text(response: Any) -> str:

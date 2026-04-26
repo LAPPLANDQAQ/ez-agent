@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from tavily import AsyncTavilyClient
+from tavily import AsyncTavilyClient  # type: ignore[import-untyped]
 
 from app.config import get_settings
 from app.domain.errors import SearchProviderError
